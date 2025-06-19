@@ -1,0 +1,239 @@
+@page "/"
+@using BlazorTetris.Models
+@using BlazorTetris.Services
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.JSInterop
+@inject GameService GameService
+@inject LocalStorageService LocalStorageService
+@inject IJSRuntime JSRuntime
+@implements IDisposable
+
+<PageTitle>Tetris 2D</PageTitle>
+
+<div class="game-container">
+    <div class="game-ui">
+        <div class="score-panel">
+            <h3>Score: @GameService.Score</h3>
+            <h3>Level: @GameService.Level</h3>
+            <h3>Lines: @GameService.LinesCleared</h3>
+            <h4>High Score: @GameService.HighScore</h4>
+        </div>
+        
+        <div class="game-controls">
+            @if (GameService.State == GameState.Menu || GameService.State == GameState.GameOver)
+            {
+                <button class="btn btn-primary" @onclick="StartGame">
+                    @(GameService.State == GameState.GameOver ? "Restart" : "Start Game")
+                </button>
+            }
+            else if (GameService.State == GameState.Playing)
+            {
+                <button class="btn btn-secondary" @onclick="PauseGame">Pause</button>
+                <button class="btn btn-danger" @onclick="RestartGame">Restart</button>
+            }
+            else if (GameService.State == GameState.Paused)
+            {
+                <button class="btn btn-success" @onclick="ResumeGame">Resume</button>
+                <button class="btn btn-danger" @onclick="RestartGame">Restart</button>
+            }
+        </div>
+
+        @if (GameService.State == GameState.GameOver)
+        {
+            <div class="game-over">
+                <h2>Game Over!</h2>
+                <p>Final Score: @GameService.Score</p>
+                @if (GameService.Score == GameService.HighScore && GameService.Score > 0)
+                {
+                    <p style="color: gold;">🏆 New High Score! 🏆</p>
+                }
+            </div>
+        }
+
+        @if (GameService.State == GameState.Paused)
+        {
+            <div class="paused">
+                <h2>Paused</h2>
+            </div>
+        }
+    </div>
+
+    <div class="game-canvas-container">
+        <canvas id="gameCanvas" 
+                @onkeydown="HandleKeyDown" 
+                @onkeydown:preventDefault="true"
+                tabindex="0"></canvas>
+    </div>
+
+    <div class="next-piece-panel">
+        <h4>Next Piece:</h4>
+        <canvas id="nextPieceCanvas"></canvas>
+        
+        <div class="controls-help">
+            <h5>Controls:</h5>
+            <p>Arrow Keys: Move</p>
+            <p>Up Arrow: Rotate</p>
+            <p>Space: Drop</p>
+            <p>R: Rotate</p>
+            <p>P: Pause</p>
+        </div>
+
+        @if (GameService.TopScores.Any())
+        {
+            <div class="top-scores">
+                <h5>Top Scores:</h5>
+                @foreach (var (score, index) in GameService.TopScores.Select((s, i) => (s, i + 1)))
+                {
+                    <p>@index. @score</p>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private DotNetObjectReference<Game>? _objectReference;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _objectReference = DotNetObjectReference.Create(this);
+        GameService.GameStateChanged += OnGameStateChanged;
+        GameService.BoardUpdated += OnBoardUpdated;
+        await GameService.LoadScoresAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JSRuntime.InvokeVoidAsync("Tetris2D.initialize", "gameCanvas", "nextPieceCanvas", _objectReference);
+        }
+    }
+
+    private async void OnGameStateChanged()
+    {
+        await InvokeAsync(StateHasChanged);
+        await UpdateGame();
+    }
+
+    private async void OnBoardUpdated()
+    {
+        await UpdateGame();
+    }
+
+    private async Task UpdateGame()
+    {
+        var board = GameService.GetBoard();
+        var currentPiece = GameService.GetCurrentPiece();
+        var nextPiece = GameService.GetNextPiece();
+
+        var filledBlocks = board.GetFilledBlocks();
+        var currentBlocks = currentPiece?.GetAbsoluteBlocks() ?? new List<Position2D>();
+        var currentColor = currentPiece?.Color ?? "#FFFFFF";
+
+        await JSRuntime.InvokeVoidAsync("Tetris2D.updateBoard", 
+            filledBlocks, 
+            currentBlocks, 
+            currentColor,
+            nextPiece?.Blocks ?? new List<Position2D>(),
+            nextPiece?.Color ?? "#FFFFFF");
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (GameService.State != GameState.Playing) return;
+
+        switch (e.Key.ToLower())
+        {
+            case "arrowleft":
+                GameService.MovePiece(-1, 0);
+                break;
+            case "arrowright":
+                GameService.MovePiece(1, 0);
+                break;
+            case "arrowdown":
+                GameService.MovePiece(0, -1);
+                break;
+            case "arrowup":
+                GameService.RotatePiece();
+                break;
+            case "a":
+                GameService.RotatePiece();
+                break;
+            case "d":
+                GameService.RotatePiece();
+                break;
+            case "r":
+                GameService.RotatePiece();
+                break;
+            case "p":
+                GameService.PauseGame();
+                break;
+            case " ":
+                GameService.DropPiece();
+                break;
+        }
+    }
+
+    private async Task StartGame()
+    {
+        GameService.StartGame();
+        // await JSRuntime.InvokeVoidAsync("Tetris2D.focusCanvas");
+    }
+
+    private void PauseGame()
+    {
+        GameService.PauseGame();
+    }
+
+    private async Task ResumeGame()
+    {
+        GameService.PauseGame(); // Toggle pause
+        // await JSRuntime.InvokeVoidAsync("Tetris2D.focusCanvas");
+    }
+
+    private async Task RestartGame()
+    {
+        GameService.RestartGame();
+        // await JSRuntime.InvokeVoidAsync("Tetris2D.focusCanvas");
+    }
+
+    [JSInvokable]
+    public async Task OnKeyDown(string key)
+    {
+        if (GameService.State != GameState.Playing) return;
+
+        switch (key.ToLower())
+        {
+            case "arrowleft":
+                GameService.MovePiece(-1, 0);
+                break;
+            case "arrowright":
+                GameService.MovePiece(1, 0);
+                break;
+            case "arrowdown":
+                GameService.MovePiece(0, -1);
+                break;
+            case "arrowup":
+                GameService.RotatePiece();
+                break;
+            case "r":
+                GameService.RotatePiece();
+                break;
+            case "p":
+                GameService.PauseGame();
+                break;
+            case " ":
+            case "spacebar":
+                GameService.DropPiece();
+                break;
+        }
+    }
+
+    public void Dispose()
+    {
+        GameService.GameStateChanged -= OnGameStateChanged;
+        GameService.BoardUpdated -= OnBoardUpdated;
+        _objectReference?.Dispose();
+    }
+}
